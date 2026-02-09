@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finger Touch Game - High Precision (0.045)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        canvas { position: absolute; left: 0; top: 0; width: 100vw; height: 100vh; object-fit: cover; transform: scaleX(-1); }
+        #ui-layer { position: absolute; width: 100%; height: 100%; pointer-events: none; }
+        
+        .hud { position: absolute; top: 20px; left: 20px; font-size: 28px; color: #0f0; text-shadow: 2px 2px 2px #000; z-index: 10; }
+        
+        .question-area { 
+            position: absolute; 
+            top: 80px; 
+            width: 100%; 
+            display: flex; 
+            justify-content: space-around; 
+            z-index: 5;
+        }
+        
+        .hand-monitor { 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: flex-start; 
+            background: rgba(0,0,0,0.5); 
+            padding: 20px; 
+            border-radius: 40px; 
+            min-width: 320px; 
+            min-height: 350px; 
+            border: 4px solid #555; 
+            transition: all 0.3s;
+        }
+        
+        #monitor-l.monitor-correct { background: rgba(255, 0, 255, 0.25); border-color: #ff00ff; box-shadow: 0 0 30px #ff00ff; }
+        #monitor-r.monitor-correct { background: rgba(0, 255, 255, 0.25); border-color: #00ffff; box-shadow: 0 0 30px #00ffff; }
+
+        .target-num { 
+            font-size: 140px; 
+            font-weight: bold; 
+            line-height: 1;
+            margin: 10px 0;
+            text-shadow: 0 0 20px rgba(0,0,0,0.5); 
+        }
+        
+        #target-l { color: #ff00ff; }
+        #target-r { color: #00ffff; }
+        
+        .finger-name { font-size: 32px; color: #fff; font-weight: bold; }
+        .current-status { font-size: 20px; color: #aaa; margin-top: 10px; }
+        
+        #msg { 
+            position: absolute; 
+            top: 15%; 
+            width: 100%; 
+            text-align: center; 
+            font-size: 60px; 
+            color: #ffff00; 
+            text-shadow: 3px 3px 5px #000; 
+            z-index: 100; 
+        }
+    </style>
+</head>
+<body>
+
+    <video id="input_video" style="display:none;" playsinline></video>
+    <canvas id="output_canvas"></canvas>
+
+    <div id="ui-layer">
+        <div class="hud">
+            <div>SCORE: <span id="score">0</span></div>
+            <div>TIME: <span id="timer">60</span></div>
+        </div>
+        
+        <div id="msg">カメラ起動中...</div>
+
+        <div class="question-area">
+            <div id="monitor-l" class="hand-monitor">
+                <div class="finger-name">左手</div>
+                <div id="target-l" class="target-num">-</div>
+                <div class="current-status" id="name-l">準備中</div>
+            </div>
+            <div id="monitor-r" class="hand-monitor">
+                <div class="finger-name">右手</div>
+                <div id="target-r" class="target-num">-</div>
+                <div class="current-status" id="name-r">準備中</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const scoreEl = document.getElementById('score'), timerEl = document.getElementById('timer');
+        const targetLEl = document.getElementById('target-l'), targetREl = document.getElementById('target-r');
+        const nameLEl = document.getElementById('name-l'), nameREl = document.getElementById('name-r');
+        const monitorLEl = document.getElementById('monitor-l'), monitorREl = document.getElementById('monitor-r');
+        const msgEl = document.getElementById('msg');
+
+        let score = 0, timeLeft = 60, gameActive = false;
+        let targetLNum = 1, targetRNum = 1; 
+        let lastSuccessTime = 0;
+        let isFirstFrame = true;
+
+        const fingerMap = {
+            1: { idx: 4, name: "親指" },
+            2: { idx: 8, name: "人差し指" },
+            3: { idx: 12, name: "中指" },
+            4: { idx: 16, name: "薬指" },
+            5: { idx: 20, name: "小指" }
+        };
+
+        function speak(text) {
+            window.speechSynthesis.cancel();
+            const uttr = new SpeechSynthesisUtterance(text);
+            uttr.lang = 'ja-JP';
+            window.speechSynthesis.speak(uttr);
+        }
+
+        function nextRound() {
+            targetLNum = Math.floor(Math.random() * 5) + 1;
+            targetRNum = Math.floor(Math.random() * 5) + 1;
+
+            targetLEl.innerText = targetLNum;
+            targetREl.innerText = targetRNum;
+            nameLEl.innerText = fingerMap[targetLNum].name;
+            nameREl.innerText = fingerMap[targetRNum].name;
+            
+            monitorLEl.classList.remove('monitor-correct');
+            monitorREl.classList.remove('monitor-correct');
+        }
+
+        function startGame() {
+            if (gameActive) return;
+            score = 0; timeLeft = 60;
+            scoreEl.innerText = score;
+            gameActive = true;
+            msgEl.innerText = ""; 
+            speak("スタート");
+            nextRound();
+            
+            const timer = setInterval(() => {
+                if (!gameActive) { clearInterval(timer); return; }
+                timeLeft--;
+                timerEl.innerText = timeLeft;
+                if (timeLeft <= 0) {
+                    gameActive = false;
+                    msgEl.innerText = "終了！";
+                    speak("終了。" + score + "点です。");
+                }
+            }, 1000);
+        }
+
+        function onResults(results) {
+            try {
+                if (isFirstFrame) {
+                    msgEl.innerText = "手を上げてスタート";
+                    isFirstFrame = false;
+                }
+
+                if (canvasElement.width !== videoElement.videoWidth) {
+                    canvasElement.width = videoElement.videoWidth;
+                    canvasElement.height = videoElement.videoHeight;
+                }
+
+                canvasCtx.save();
+                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+                let leftHandPos = null;
+                let rightHandPos = null;
+                let startTrigger = false;
+
+                if (results.multiHandLandmarks && results.multiHandedness) {
+                    for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                        const landmarks = results.multiHandLandmarks[i];
+                        const label = results.multiHandedness[i].label; 
+
+                        // 左右反転修正済みの判定
+                        const isLeftHand = (label === 'Right');
+                        const targetIdx = isLeftHand ? fingerMap[targetLNum].idx : fingerMap[targetRNum].idx;
+                        const tip = landmarks[targetIdx];
+
+                        if (isLeftHand) {
+                            leftHandPos = tip;
+                        } else {
+                            rightHandPos = tip;
+                        }
+
+                        if (landmarks[0].y < 0.3) startTrigger = true;
+
+                        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#ffffff22', lineWidth: 1});
+                        
+                        // ターゲット指先を円でガイド
+                        canvasCtx.beginPath();
+                        canvasCtx.arc(tip.x * canvasElement.width, tip.y * canvasElement.height, 22, 0, 2 * Math.PI);
+                        canvasCtx.fillStyle = isLeftHand ? "rgba(255, 0, 255, 0.4)" : "rgba(0, 255, 255, 0.4)";
+                        canvasCtx.fill();
+                        canvasCtx.strokeStyle = "#fff";
+                        canvasCtx.lineWidth = 1;
+                        canvasCtx.stroke();
+                    }
+                }
+
+                if (!gameActive && startTrigger) startGame();
+
+                // 接触判定
+                if (gameActive && leftHandPos && rightHandPos) {
+                    const dx = leftHandPos.x - rightHandPos.x;
+                    const dy = leftHandPos.y - rightHandPos.y;
+                    const dz = leftHandPos.z - rightHandPos.z;
+                    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+                    // ★判定距離を 0.09 の 0.5倍 = 0.045 に変更★
+                    if (dist < 0.06) {
+                        monitorLEl.classList.add('monitor-correct');
+                        monitorREl.classList.add('monitor-correct');
+
+                        if (Date.now() - lastSuccessTime > 1200) {
+                            score++;
+                            scoreEl.innerText = score;
+                            msgEl.innerText = "Perfect!";
+                            lastSuccessTime = Date.now();
+                            playBeep();
+                            setTimeout(() => { if(gameActive) { msgEl.innerText = ""; nextRound(); } }, 600);
+                        }
+                    } else {
+                        monitorLEl.classList.remove('monitor-correct');
+                        monitorREl.classList.remove('monitor-correct');
+                    }
+                }
+
+                canvasCtx.restore();
+            } catch (e) {
+                console.error(e);
+                canvasCtx.restore();
+            }
+        }
+
+        function playBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain); gain.connect(ctx.destination);
+                osc.frequency.value = 1100;
+                osc.start();
+                gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
+                osc.stop(ctx.currentTime + 0.1);
+            } catch(e) {}
+        }
+
+        nextRound();
+
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7, // 精度向上のため少しアップ
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280, height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
